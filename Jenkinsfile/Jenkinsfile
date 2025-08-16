@@ -1,0 +1,110 @@
+pipeline {
+    agent any
+
+    environment {
+        // DockerHub credentials (Username + Token/Password)
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds') 
+
+        // SSH key for EC2 (stored in Jenkins credentials as "SSH Username with private key")
+        SSH_KEY = credentials('ec2-ssh-key')  
+
+        // Common values
+        APP_NAME = "devops-dev-project"
+        DOCKER_REPO = "your-dockerhub-username/devops-dev-project"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                    docker build -t ${DOCKER_REPO}:${BUILD_NUMBER} .
+                """
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                sh """
+                    echo "${DOCKERHUB_CREDENTIALS_PSW}" | docker login -u "${DOCKERHUB_CREDENTIALS_USR}" --password-stdin
+                    docker push ${DOCKER_REPO}:${BUILD_NUMBER}
+                """
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                expression { env.BRANCH_NAME != 'main' }  // For feature branches
+            }
+            steps {
+                echo "Deploying feature branch ${env.BRANCH_NAME} to DEV only..."
+                sh """
+                    ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
+                        --private-key ${SSH_KEY} \
+                        --extra-vars "env=dev image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKER_REPO}"
+                """
+            }
+        }
+
+        stage('Main Branch Promotion Flow') {
+            when {
+                branch 'main'
+            }
+            stages {
+                stage('Deploy to DEV') {
+                    steps {
+                        sh """
+                            ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
+                                --private-key ${SSH_KEY} \
+                                --extra-vars "env=dev image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKER_REPO}"
+                        """
+                    }
+                }
+
+                stage('Approval for QA') {
+                    steps {
+                        input message: "Deploy to QA?", ok: "Proceed"
+                    }
+                }
+
+                stage('Deploy to QA') {
+                    steps {
+                        sh """
+                            ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
+                                --private-key ${SSH_KEY} \
+                                --extra-vars "env=qa image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKER_REPO}"
+                        """
+                    }
+                }
+
+                stage('Approval for Staging') {
+                    steps {
+                        input message: "Deploy to Staging?", ok: "Proceed"
+                    }
+                }
+
+                stage('Deploy to Staging') {
+                    steps {
+                        sh """
+                            ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
+                                --private-key ${SSH_KEY} \
+                                --extra-vars "env=staging image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKER_REPO}"
+                        """
+                    }
+                }
+
+                stage('Approval for Production') {
+                    steps {
+                        input message: "Deploy to Production?", ok: "Proceed"
+                    }
+                }
+
+                stage('Deploy to Production') {
+                    steps {
+                        sh """
+                            ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
