@@ -1,0 +1,4 @@
+app_port: 8082
+replicas: 1
+env_vars:
+  SPRING_PROFILES_ACTIVE: dev
