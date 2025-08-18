@@ -1,85 +1,234 @@
 pipeline {
+
+    // OS: WINDOWS
     agent any
-
-    environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')   // Docker Hub creds
-        SSH_KEY = credentials('aws-ssh-key')                     // PEM file for Ansible
+    
+    tools {
+        maven 'MAVEN_HOME'
     }
-
+    
+    environment {
+        DOCKER_USER = 'gvkvamsy99'  // Replace with your Docker Hub username
+    }
+    
     stages {
-        stage('Checkout') {
+        stage('Cloning the dev project') { 
             steps {
-                checkout scm
+                echo '📥 Cloning Git repository...'
+                git branch: 'main', url: 'https://github.com/KrishnaVamsy99/DevOps_Dev_Project.git'
             }
         }
-
+        
+        stage('Build the dev code') {
+            steps {
+                echo '🛠️ Building Java code with Maven...'
+                bat 'mvn clean install'
+            }
+            post {
+                success {
+                    echo '✅ Archiving artifacts...'
+                    archiveArtifacts artifacts: 'target/*.jar', followSymlinks: false
+                }
+            }
+        }
+        
+        stage('Cloning the test project') {  
+            steps {
+                echo '📦 Packaging application with Maven...'
+                bat 'mvn package'
+            }
+            post {
+                success {
+                    echo '📊 Generating test reports...'
+                    allure includeProperties: false, jdk: '', results: [[path: 'allure-results']]
+                    testNG()
+                }
+            }
+        }
+        
         stage('Build & Push Docker Image') {
-            agent { label 'docker-slave' }   // run this on the slave where Docker is installed
             steps {
-                sh """
-                  docker build -t ${DOCKERHUB_CREDENTIALS_USR}/devops-dev-project:${BUILD_NUMBER} .
-                  echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_CREDENTIALS_USR} --password-stdin
-                  docker push ${DOCKERHUB_CREDENTIALS_USR}/devops-dev-project:${BUILD_NUMBER}
-                """
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                usernameVariable: 'DOCKER_USER',
+                                                passwordVariable: 'DOCKER_PASS')]) {
+                    bat '''
+                        echo "🐳 Building Docker image..."
+                        docker build -t %DOCKER_USER%/devops-dev-project:%BUILD_NUMBER% .
+
+                        echo "🔑 Logging in to DockerHub..."
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+
+                        echo "📤 Tagging image as latest..."
+                        docker tag %DOCKER_USER%/devops-dev-project:%BUILD_NUMBER% %DOCKER_USER%/devops-dev-project:latest
+
+                        echo "📤 Pushing Docker image to DockerHub..."
+                        docker push %DOCKER_USER%/devops-dev-project:%BUILD_NUMBER%
+                        docker push %DOCKER_USER%/devops-dev-project:latest
+                    '''
+                }
             }
         }
-
-        stage('Deploy to Dev') {
-            agent { label 'master' }   // run this stage on master where Ansible is installed
+        
+        stage('Pull & Run Docker Image') {
             steps {
-                sh """
-                  ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
-                    --extra-vars "env=dev image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKERHUB_CREDENTIALS_USR}/devops-dev-project"
-                """
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                usernameVariable: 'DOCKER_USER',
+                                                passwordVariable: 'DOCKER_PASS')]) {
+                    bat '''
+                        echo "🔑 Logging in to DockerHub..."
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+
+                        echo "📥 Pulling Docker image from DockerHub..."
+                        docker pull %DOCKER_USER%/devops-dev-project:%BUILD_NUMBER% || exit 0
+
+                        echo "🧹 Cleaning up existing container..."
+                        docker stop devops-container || exit 0
+                        docker rm devops-container || exit 0
+
+                        echo "🚀 Running Docker container..."
+                        docker run -d --name devops-container -p 8082:8080 %DOCKER_USER%/devops-dev-project:%BUILD_NUMBER%
+
+                        echo "⏳ Waiting for container to start..."
+                        timeout /T 10
+
+                        echo "🧪 Testing application..."
+                        curl http://localhost:8082 || echo "Test failed"
+                    '''
+                }
+            }
+            post {
+                always {
+                    bat '''
+                        echo "🧹 Cleaning up container..."
+                        docker stop devops-container || exit 0
+                        docker rm devops-container || exit 0
+                    '''
+                }
             }
         }
-
-        stage('Approve for QA?') {
-            steps {
-                input message: "Promote to QA?", ok: "Deploy"
-            }
+    }
+    
+    post {
+        always {
+            echo '🏁 Pipeline completed'
         }
-
-        stage('Deploy to QA') {
-            agent { label 'master' }
-            steps {
-                sh """
-                  ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
-                    --extra-vars "env=qa image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKERHUB_CREDENTIALS_USR}/devops-dev-project"
-                """
-            }
-        }
-
-       /* stage('Approve for Staging?') {
-            steps {
-                input message: "Promote to Staging?", ok: "Deploy"
-            }
-        }
-
-        stage('Deploy to Staging') {
-            agent { label 'master' }
-            steps {
-                sh """
-                  ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
-                    --extra-vars "env=staging image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKERHUB_CREDENTIALS_USR}/devops-dev-project"
-                """
-            }
-        }
-
-        stage('Approve for Production?') {
-            steps {
-                input message: "Promote to Production?", ok: "Deploy"
-            }
-        }
-
-        stage('Deploy to Production') {
-            agent { label 'master' }
-            steps {
-                sh """
-                  ansible-playbook -i ansible/inventory.ini ansible/deploy.yml \
-                    --extra-vars "env=prod image_tag=${BUILD_NUMBER} dockerhub_repo=${DOCKERHUB_CREDENTIALS_USR}/devops-dev-project"
-                """
-            }
-        }*/
     }
 }
+
+/*
+OS - UNIX/LINUX Distributions
+pipeline {
+    agent any
+    
+    tools {
+        maven 'MAVEN_HOME'
+    }
+    
+    environment {
+        DOCKER_USER = 'gvkvamsy99'
+    }
+    
+    stages {
+        stage('Cloning the dev project') { 
+            steps {
+                echo '📥 Cloning Git repository...'
+                git branch: 'main', url: 'https://github.com/KrishnaVamsy99/DevOps_Dev_Project.git'
+            }
+        }
+        
+        stage('Build the dev code') {
+            steps {
+                echo '🛠️ Building Java code with Maven...'
+                sh 'mvn clean install'
+            }
+            post {
+                success {
+                    echo '✅ Archiving artifacts...'
+                    archiveArtifacts artifacts: 'target/*.jar', followSymlinks: false
+                }
+            }
+        }
+        
+        stage('Cloning the test project') {  
+            steps {
+                echo '📦 Packaging application with Maven...'
+                sh 'mvn package'
+            }
+            post {
+                success {
+                    echo '📊 Generating test reports...'
+                    allure includeProperties: false, jdk: '', results: [[path: 'allure-results']]
+                    testNG()
+                }
+            }
+        }
+        
+        stage('Build & Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                usernameVariable: 'DOCKER_USER',
+                                                passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo "🐳 Building Docker image..."
+                        docker build -t $DOCKER_USER/devops-dev-project:$BUILD_NUMBER .
+
+                        echo "🔑 Logging in to DockerHub..."
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+
+                        echo "📤 Tagging image as latest..."
+                        docker tag $DOCKER_USER/devops-dev-project:$BUILD_NUMBER $DOCKER_USER/devops-dev-project:latest
+
+                        echo "📤 Pushing Docker image to DockerHub..."
+                        docker push $DOCKER_USER/devops-dev-project:$BUILD_NUMBER
+                        docker push $DOCKER_USER/devops-dev-project:latest
+                    '''
+                }
+            }
+        }
+        
+        stage('Pull & Run Docker Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                usernameVariable: 'DOCKER_USER',
+                                                passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo "🔑 Logging in to DockerHub..."
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+
+                        echo "📥 Pulling Docker image from DockerHub..."
+                        docker pull $DOCKER_USER/devops-dev-project:$BUILD_NUMBER || true
+
+                        echo "🧹 Cleaning up existing container..."
+                        docker stop devops-container || true
+                        docker rm devops-container || true
+
+                        echo "🚀 Running Docker container..."
+                        docker run -d --name devops-container -p 8082:8080 $DOCKER_USER/devops-dev-project:$BUILD_NUMBER
+
+                        echo "⏳ Waiting for container to start..."
+                        sleep 10
+
+                        echo "🧪 Testing application..."
+                        curl http://localhost:8082 || echo "Test failed"
+                    '''
+                }
+            }
+            post {
+                always {
+                    sh '''
+                        echo "🧹 Cleaning up container..."
+                        docker stop devops-container || true
+                        docker rm devops-container || true
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo '🏁 Pipeline completed'
+        }
+    }
+}
+*/
