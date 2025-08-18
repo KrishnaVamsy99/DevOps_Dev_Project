@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Unnecessary files
+target/
+build/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
